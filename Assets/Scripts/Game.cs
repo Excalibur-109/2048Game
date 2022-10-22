@@ -30,6 +30,7 @@ public class Game : MonoBehaviour
     [SerializeField] GameObject gamePanel;
     [SerializeField] Transform gameSpace;
     [SerializeField] Transform element;
+    [SerializeField] Button btnRestart;
 
     [SerializeField] GameObject settingPanel;
     [SerializeField] Button btnRatio;
@@ -55,6 +56,7 @@ public class Game : MonoBehaviour
 	List<Transform> transElementPool;
 
     int[,] matrix;
+    Dictionary<int, int[,]> gameMatrix;
     Vector2[,] positions;
     Transform[,] gameElements;
     Dictionary<Transform, TextMeshProUGUI> elementTextDic;
@@ -68,10 +70,11 @@ public class Game : MonoBehaviour
 
     float animTime = 0.25f;
     float scaleMax = 1.2f;
-    int scorePoint = 0;
-    int bestPoint = 0;
+    Dictionary<int, int> scoreDic;
+    Dictionary<int, int> bestDic;
 
     bool canMove;
+    bool reach2048;
 
     Vector2 pointerDownPoint;
     Vector2 pointerUpPoint;
@@ -79,7 +82,7 @@ public class Game : MonoBehaviour
     private void Awake()
 	{
 		transBG = new List<Transform>();
-		transElementPool = new List<Transform>();
+        transElementPool = new List<Transform>();
         elementTextDic = new Dictionary<Transform, TextMeshProUGUI>();
         elementImageDic = new Dictionary<Transform, Image>();
         randomLocaltion = new List<int>();
@@ -91,9 +94,10 @@ public class Game : MonoBehaviour
         RectTransform gameSpaceRect = (RectTransform)gameSpace;
         startPanel.SetActive(true);
         gamePanel.SetActive(false);
+        settingPanel.SetActive(false);
+        endPanel.SetActive(false);
 
-        bestPoint = PlayerPrefs.GetInt("best");
-        random2Ratio = PlayerPrefs.GetInt("ratio");
+        LoadGameData();
     }
 
 	private void Start()
@@ -101,15 +105,31 @@ public class Game : MonoBehaviour
 		btn4x4.onClick.AddListener(() => { length = 4; StartGame(); });
         btn5x5.onClick.AddListener(() => { length = 5; StartGame(); });
         btn6x6.onClick.AddListener(() => { length = 6; StartGame(); });
-		btnQuit.onClick.AddListener(() => Application.Quit());
+		btnQuit.onClick.AddListener(() =>
+        {
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#else
+            Application.Quit();
+#endif
+        });
         btnRatio.onClick.AddListener(() => { canMove = false; settingPanel.SetActive(true); });
         btnCloseSetting.onClick.AddListener(() => { StartCoroutine(SetCanMove()); settingPanel.SetActive(false); });
         btnToMenu.onClick.AddListener(BackToMenu);
         btnBack.onClick.AddListener(BackToMenu);
+        btnRestart.onClick.AddListener(() =>
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                matrix[GetRowIndex(i), GetColumnIndex(i)] = 0;
+            }
+            scoreDic[length] = 0;
+            StartGame();
+        });
         slider.onValueChanged.AddListener(value =>
         {
             random2Ratio = (int)value;
-            ratioText.text = $"Random 2: {random2Ratio}%\n Random 4: {100 - random2Ratio}%";
+            ratioText.text = $"随机 2: {random2Ratio}%\n 随机 4: {100 - random2Ratio}%";
         });
     }
 
@@ -117,6 +137,10 @@ public class Game : MonoBehaviour
 	{
         if (canMove)
         {
+            if (Input.touchCount > 1)
+            {
+                return;
+            }
             if (Input.GetMouseButtonDown(0))
             {
                 pointerDownPoint = Input.mousePosition;
@@ -136,17 +160,15 @@ public class Game : MonoBehaviour
         gamePanel.SetActive(true);
         settingPanel.SetActive(false);
         endPanel.SetActive(false);
-
-        ratioText.text = $"Random 2: {random2Ratio}%\n Random 4: {100 - random2Ratio}%";
+        canMove = false;
+        ratioText.text = $"随机 2: {random2Ratio}%\n 随机 4: {100 - random2Ratio}%";
         slider.value = random2Ratio;
         result.text = string.Empty;
         resultTrans.text = string.Empty;
-        scorePoint = 0;
-        score.text = scorePoint.ToString();
-        best.text = bestPoint.ToString();
+        score.text = scoreDic[length].ToString();
+        best.text = bestDic[length].ToString();
 
-        matrix = new int[length, length];
-        positions = new Vector2[length, length];
+        reach2048 = false;
         if (gameElements != null)
         {
             for (int j = 0; j < gameElements.GetLength(0); ++j)
@@ -170,26 +192,70 @@ public class Game : MonoBehaviour
         {
             transBG.Add(Instantiate(prefabBG, gridLayout.transform).transform);
         }
-
-        LayoutRebuilder.ForceRebuildLayoutImmediate(gridLayout.transform as RectTransform);
-
-        for (i = 0; i < transBG.Count; ++i)
+        for (i = 0; i < transBG.Count; i++)
         {
             transBG[i].gameObject.SetActive(i < count);
-            if (i < count)
+        }
+        LayoutRebuilder.ForceRebuildLayoutImmediate(gridLayout.transform as RectTransform);
+
+        StartCoroutine(StartGameRoutine());
+    }
+
+    IEnumerator StartGameRoutine()
+    {
+        yield return new WaitForSeconds(0.1f);
+        int i, j, k;
+        positions = new Vector2[length, length];
+        for (i = 0; i < count; ++i)
+        {
+            positions[GetRowIndex(i), GetColumnIndex(i)] = transBG[i].localPosition;
+        }
+        if (!gameMatrix.ContainsKey(length))
+        {
+            matrix = new int[length, length];
+            gameMatrix.Add(length, matrix);
+            RandomElement();
+        }
+        else
+        {
+            gameMatrix.TryGetValue(length, out matrix);
+            bool allZero = true;
+            for (i = 0; i < count; ++i)
             {
-                positions[GetRowIndex(i), GetColumnIndex(i)] = transBG[i].localPosition;
+                if (matrix[GetRowIndex(i), GetColumnIndex(i)] > 0)
+                {
+                    allZero = false;
+                }
+            }
+            if (!allZero)
+            {
+                for (i = 0; i < count; ++i)
+                {
+                    j = GetRowIndex(i);
+                    k = GetColumnIndex(i);
+                    if (matrix[j, k] > 0)
+                    {
+                        Transform trans = GetElement();
+                        trans.localPosition = positions[j, k];
+                        gameElements[j, k] = trans;
+                        RefreshElemnt(j, k);
+                        StartCoroutine(AnimShow(trans));
+                    }
+                }
+            }
+            else
+            {
+                RandomElement();
             }
         }
 
-        RandomElement();
         StartCoroutine(SetCanMove());
     }
 
     private void DoMove()
     {
         Vector2 delta = pointerUpPoint - pointerDownPoint;
-        if (delta.magnitude < 10f)
+        if (delta.magnitude < 100f)
             return;
 
         if (Mathf.Abs(delta.x) >= Mathf.Abs(delta.y))
@@ -203,11 +269,6 @@ public class Game : MonoBehaviour
 
         int i, j, k, step;
         bool changed = false;
-        for (i = 0; i < count; ++i)
-        {
-            j = GetRowIndex(i);
-            k = GetColumnIndex(i);
-        }
         switch (axis)
         {
             case Axis.up:
@@ -360,7 +421,7 @@ public class Game : MonoBehaviour
         gameElements[originalRow, originalColumn] = null;
         if (matrix[targetRow, targetColumn] == originalValue)
         {
-            scorePoint += matrix[targetRow, targetColumn];
+            scoreDic[length] += matrix[targetRow, targetColumn];
             matrix[targetRow, targetColumn] *= 2;
             switch (axis)
             {
@@ -415,6 +476,21 @@ public class Game : MonoBehaviour
         result.text = str;
         resultTrans.text = str2;
 
+        if (!reach2048)
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                if (matrix[GetRowIndex(i), GetColumnIndex(i)] == 2048)
+                {
+                    reach2048 = true;
+                    endText.text = "2048啦 好厉害!!!";
+                    continueText.text = "继续";
+                    btnContinue.onClick.RemoveAllListeners();
+                    btnContinue.onClick.AddListener(() => { StartCoroutine(SetCanMove()); endPanel.SetActive(false); });
+                    endPanel.SetActive(true);
+                }
+            }
+        }
         IsGameOver();
     }
 
@@ -422,14 +498,6 @@ public class Game : MonoBehaviour
     {
         elementImageDic[gameElements[row, column]].color = GetColor(matrix[row, column]);
         elementTextDic[gameElements[row, column]].text = matrix[row, column].ToString();
-        if (scorePoint == 2048)
-        {
-            endText.text = "Congrations !!!";
-            continueText.text = "Continue";
-            btnContinue.onClick.RemoveAllListeners();
-            btnContinue.onClick.AddListener(() => { canMove = false; endPanel.SetActive(false); });
-            endPanel.SetActive(true);
-        }
     }
 
     private int Random24()
@@ -530,11 +598,11 @@ public class Game : MonoBehaviour
         yield return new WaitForSeconds(animTime / 2f);
         float timer = 0f;
         float scale = moveTrans.localScale.x;
-        score.text = scorePoint.ToString();
-        if (scorePoint >= bestPoint)
+        score.text = scoreDic[length].ToString();
+        if (scoreDic[length] >= bestDic[length])
         {
-            bestPoint = scorePoint;
-            best.text = bestPoint.ToString();
+            bestDic[length] = scoreDic[length];
+            best.text = bestDic[length].ToString();
         }
         RefreshElemnt(row, column);
         while (timer <= animTime)
@@ -648,6 +716,7 @@ public class Game : MonoBehaviour
         gamePanel.SetActive(false);
         endPanel.SetActive(false);
         startPanel.SetActive(true);
+        SaveGameData();
     }
 
     private bool IsGameOver()
@@ -672,6 +741,7 @@ public class Game : MonoBehaviour
             {
                 if (matrix[up, k] == value)
                     return false;
+
             }
             down = j + 1;
             if (down >= 0 && down < length)
@@ -682,28 +752,103 @@ public class Game : MonoBehaviour
             left = k - 1;
             if (left >= 0 && left < length)
             {
-                if (matrix[k, left] == value)
+                if (matrix[j, left] == value)
                     return false;
             }
             right = k + 1;
             if (right >= 0 && right < length)
             {
-                if (matrix[k, right] == value)
+                if (matrix[j, right] == value)
                     return false;
             }
         }
-        endText.text = "Failed!";
-        continueText.text = "Again";
+        endText.text = "结束了哟!!";
+        continueText.text = "再来";
         btnContinue.onClick.RemoveAllListeners();
-        btnContinue.onClick.AddListener(() => { canMove = false; StartGame(); });
+        btnContinue.onClick.AddListener(() => { StartCoroutine(SetCanMove()); StartGame(); });
         endPanel.SetActive(true);
+        for (i = 0; i < count; ++i)
+        {
+            matrix[GetRowIndex(i), GetColumnIndex(i)] = 0;
+        }
+        scoreDic[length] = 0;
         return true;
+    }
+
+    private void LoadGameData()
+    {
+        random2Ratio = PlayerPrefs.GetInt("ratio");
+        if (random2Ratio == 0)
+            random2Ratio = 80;
+
+        scoreDic = new Dictionary<int, int>();
+        bestDic = new Dictionary<int, int>();
+        gameMatrix = new Dictionary<int, int[,]>();
+        for (int i = 4; i <= 6; ++i)
+        {
+            string scoreStr = PlayerPrefs.GetString($"S{i}");
+            int.TryParse(scoreStr, out int s);
+            scoreDic.Add(i, s); 
+            scoreStr = PlayerPrefs.GetString($"B{i}");
+            int.TryParse(scoreStr, out s);
+            bestDic.Add(i, s);
+
+            bool addToDic = false;
+            int[,] temp = new int[i, i];
+            string str = PlayerPrefs.GetString(i.ToString());
+            if (!string.IsNullOrEmpty(str) && !string.IsNullOrWhiteSpace(str))
+            {
+                string[] paramsStr = str.Split('|');
+                for (int j = 0; j < i * i; ++j)
+                {
+                    int value = int.Parse(paramsStr[j]);
+                    temp[j / i, j % i] = value;
+                    if (!addToDic && value > 0)
+                    {
+                        addToDic = true;
+                    }
+                }
+                if (addToDic)
+                {
+                    gameMatrix.Add(i, temp);
+                }
+            }
+        }
+    }
+
+    private void SaveGameData()
+    {
+        PlayerPrefs.SetInt("ratio", random2Ratio);
+        foreach (var item in scoreDic)
+        {
+            PlayerPrefs.SetString($"S{item.Key}", item.Value.ToString());
+        }
+        foreach (var item in bestDic)
+        {
+            PlayerPrefs.SetString($"B{item.Key}", item.Value.ToString());
+        }
+        string str;
+        foreach (var item in gameMatrix)
+        {
+            str = string.Empty;
+            for (int i = 0; i < item.Value.GetLength(0); ++i)
+            {
+                for (int j = 0; j < item.Value.GetLength(1); ++j)
+                {
+                    str += item.Value[i, j].ToString();
+                    if (i * j != Mathf.Pow(item.Key - 1, 2))
+                    {
+                        str += "|";
+                    }
+                }
+            }
+            PlayerPrefs.SetString(item.Key.ToString(), str);
+        }
+        PlayerPrefs.Save();
     }
 
     private void OnApplicationQuit()
     {
-        PlayerPrefs.SetInt("best", bestPoint);
-        PlayerPrefs.SetInt("ratio", random2Ratio);
-        PlayerPrefs.Save();
+        SaveGameData();
     }
 }
